@@ -16,27 +16,23 @@
         <div class="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
                 <h1 class="text-3xl font-extrabold tracking-tight">AI Hunter 🔥</h1>
-                <p class="mt-2 text-sm text-slate-600">Focused on constructor timelapse videos (worldwide).</p>
+                <p class="mt-2 text-sm text-slate-600">Focused on YouTube Shorts search results.</p>
             </div>
 
             <div class="flex flex-col items-stretch gap-3 sm:items-end">
                 <input
                     id="keyword-input"
                     type="text"
-                    placeholder="Contoh: constructor timelapse"
-                    value="constructor timelapse"
+                    placeholder="Contoh: ai, constructor, timelapse"
+                    value="ai"
                     class="w-full rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-800 outline-none ring-0 focus:border-slate-500 sm:w-80"
                 >
-                <label class="inline-flex items-center gap-2 text-sm text-slate-700">
-                    <input id="shorts-only" type="checkbox" checked class="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500">
-                    Shorts only
-                </label>
                 <button
                     id="fetch-btn"
                     type="button"
                     class="inline-flex items-center justify-center rounded-lg bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-400"
                 >
-                    Fetch by Keyword
+                    Search Shorts
                 </button>
             </div>
         </div>
@@ -51,7 +47,6 @@
     <script>
         const fetchButton = document.getElementById('fetch-btn');
         const keywordInput = document.getElementById('keyword-input');
-        const shortsOnlyInput = document.getElementById('shorts-only');
         const videosGrid = document.getElementById('videos-grid');
         const statusBox = document.getElementById('status');
 
@@ -126,14 +121,16 @@
 
             fetchButton.disabled = true;
             videosGrid.innerHTML = '';
-            const shortsOnly = !!shortsOnlyInput?.checked;
-            statusBox.textContent = shortsOnly
-                ? `Loading Shorts for keyword: ${keyword}...`
-                : `Loading videos for keyword: ${keyword}...`;
+            statusBox.textContent = `Loading Shorts for keyword: ${keyword}...`;
 
             try {
-                const shorts = shortsOnly ? '1' : '0';
-                const response = await fetch(`/ai-hunter/search?keyword=${encodeURIComponent(keyword)}&shorts=${shorts}`);
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 25000);
+                const response = await fetch(`/ai-hunter/search?keyword=${encodeURIComponent(keyword)}&shorts=1`, {
+                    signal: controller.signal,
+                });
+                clearTimeout(timeoutId);
+
                 if (!response.ok) {
                     let errorMessage = 'Failed to fetch videos.';
                     try {
@@ -151,18 +148,18 @@
                 const videos = await response.json();
 
                 if (!Array.isArray(videos) || videos.length === 0) {
-                    statusBox.textContent = shortsOnly
-                        ? `No Shorts found for keyword: ${keyword}. Try another keyword.`
-                        : `No videos found for keyword: ${keyword}. Try another keyword.`;
+                    statusBox.textContent = `No Shorts found for keyword: ${keyword}. Try another keyword.`;
                     return;
                 }
 
                 renderVideos(videos);
-                statusBox.textContent = shortsOnly
-                    ? `Loaded ${videos.length} Shorts for keyword: ${keyword}.`
-                    : `Loaded ${videos.length} videos for keyword: ${keyword}.`;
+                statusBox.textContent = `Loaded ${videos.length} Shorts for keyword: ${keyword}.`;
             } catch (error) {
-                statusBox.textContent = error.message || 'Something went wrong while fetching videos.';
+                if (error?.name === 'AbortError') {
+                    statusBox.textContent = 'Request timeout. Coba keyword lain atau ulangi beberapa detik lagi.';
+                } else {
+                    statusBox.textContent = error.message || 'Something went wrong while fetching videos.';
+                }
             } finally {
                 fetchButton.disabled = false;
             }

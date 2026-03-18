@@ -76,7 +76,7 @@ class AiHunterController extends Controller
         $apiKey = config('services.youtube.api_key');
         $manualKeyword = trim((string) $request->query('keyword', ''));
         $isManualKeyword = $manualKeyword !== '';
-        $shortsOnly = $request->boolean('shorts', true);
+        $shortsOnly = true;
 
         $searchQueries = $isManualKeyword
             ? [$manualKeyword]
@@ -92,7 +92,47 @@ class AiHunterController extends Controller
 
         // Manual keyword mode should behave like direct YouTube search.
         if ($isManualKeyword) {
-            // Prefer yt-dlp first so manual search still works when API quota is exceeded.
+            $apiMessage = '';
+
+            // Try YouTube API first (fast fail on quota), then fallback to yt-dlp.
+            if (! empty($apiKey)) {
+                $response = Http::timeout(15)->get('https://www.googleapis.com/youtube/v3/search', [
+                    'part' => 'snippet',
+                    'q' => $manualKeyword,
+                    'type' => 'video',
+                    'order' => 'relevance',
+                    'maxResults' => 25,
+                    'videoDuration' => $shortsOnly ? 'short' : null,
+                    'key' => $apiKey,
+                ]);
+
+                if ($response->successful()) {
+                    $videos = [];
+                    $seen = [];
+
+                    foreach ($response->json('items', []) as $item) {
+                        $videoId = (string) data_get($item, 'id.videoId', '');
+                        if ($videoId === '' || isset($seen[$videoId])) {
+                            continue;
+                        }
+
+                        $seen[$videoId] = true;
+                        $videos[] = [
+                            'title' => (string) data_get($item, 'snippet.title', ''),
+                            'thumbnail' => data_get($item, 'snippet.thumbnails.high.url')
+                                ?? data_get($item, 'snippet.thumbnails.medium.url')
+                                ?? data_get($item, 'snippet.thumbnails.default.url'),
+                            'videoId' => $videoId,
+                            'publishedAt' => data_get($item, 'snippet.publishedAt'),
+                        ];
+                    }
+
+                    return response()->json($videos);
+                }
+
+                $apiMessage = (string) data_get($response->json(), 'error.message', '');
+            }
+
             $fallback = $this->searchWithYtDlp($manualKeyword, 25, $shortsOnly);
             if ($fallback['ok']) {
                 return response()->json($fallback['videos']);
@@ -104,48 +144,12 @@ class AiHunterController extends Controller
                 ], 500);
             }
 
-            $response = Http::timeout(20)->get('https://www.googleapis.com/youtube/v3/search', [
-                'part' => 'snippet',
-                'q' => $manualKeyword,
-                'type' => 'video',
-                'order' => 'relevance',
-                'maxResults' => 25,
-                'videoDuration' => $shortsOnly ? 'short' : null,
-                'key' => $apiKey,
-            ]);
-
-            if (! $response->successful()) {
-                $apiMessage = (string) data_get($response->json(), 'error.message', '');
-
-                return response()->json([
-                    'message' => ($apiMessage !== ''
-                        ? 'YouTube API error: ' . $apiMessage
-                        : 'Failed to fetch YouTube search results.')
-                        . ' | yt-dlp fallback failed: ' . $fallback['error'],
-                ], 502);
-            }
-
-            $videos = [];
-            $seen = [];
-
-            foreach ($response->json('items', []) as $item) {
-                $videoId = (string) data_get($item, 'id.videoId', '');
-                if ($videoId === '' || isset($seen[$videoId])) {
-                    continue;
-                }
-
-                $seen[$videoId] = true;
-                $videos[] = [
-                    'title' => (string) data_get($item, 'snippet.title', ''),
-                    'thumbnail' => data_get($item, 'snippet.thumbnails.high.url')
-                        ?? data_get($item, 'snippet.thumbnails.medium.url')
-                        ?? data_get($item, 'snippet.thumbnails.default.url'),
-                    'videoId' => $videoId,
-                    'publishedAt' => data_get($item, 'snippet.publishedAt'),
-                ];
-            }
-
-            return response()->json($videos);
+            return response()->json([
+                'message' => ($apiMessage !== ''
+                    ? 'YouTube API error: ' . $apiMessage
+                    : 'Failed to fetch YouTube search results.')
+                    . ' | yt-dlp fallback failed: ' . $fallback['error'],
+            ], 502);
         }
 
         if (empty($apiKey)) {
@@ -331,11 +335,13 @@ class AiHunterController extends Controller
 
         $searchKeyword = $shortsOnly ? trim($keyword . ' shorts') : $keyword;
 
-        $result = Process::timeout(60)->run([
+        $result = Process::timeout(20)->run([
             $ytDlpBinary,
             '--flat-playlist',
             '--dump-single-json',
             '--no-warnings',
+            '--socket-timeout',
+            '10',
             'ytsearch' . $limit . ':' . $searchKeyword,
         ]);
 
@@ -362,6 +368,13 @@ class AiHunterController extends Controller
             $videoId = (string) data_get($entry, 'id', '');
             if ($videoId === '' || isset($seen[$videoId])) {
                 continue;
+            }
+
+            if ($shortsOnly) {
+                $duration = (int) data_get($entry, 'duration', 0);
+                if ($duration > 60) {
+                    continue;
+                }
             }
 
             $seen[$videoId] = true;
